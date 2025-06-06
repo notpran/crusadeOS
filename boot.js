@@ -261,8 +261,7 @@ async function startProject() {
     }
 
     // Introduce a delay before starting other processes
-    const initialDelayMs = 1500; // 1.5 seconds delay
-    console.log(`\n⏳ Waiting for ${initialDelayMs / 1000} seconds before starting backend and frontend...`);
+    const initialDelayMs = 2000; // 2 seconds delay
     await new Promise(resolve => setTimeout(resolve, initialDelayMs));
 
     // 2. Install Backend Dependencies
