@@ -78,8 +78,8 @@ const Window = ({ id, title, children, onClose, onMinimize, onMaximize, initialX
         top: position.y,
         width: size.width,
         height: size.height,
-        minWidth: '200px',
-        minHeight: '150px',
+        minWidth: '587px',
+        minHeight: '372px',
         zIndex: focused ? 200 : 100, // Focused window is on top
       }}
       onMouseDown={() => onFocus(id)} // Focus on any click within the window

@@ -22,3 +22,89 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 } */
+
+/* Terminal App Styles */
+.terminal-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #000;
+  color: #48bb78;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.terminal-output {
+  flex-grow: 1;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.terminal-output::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-output::-webkit-scrollbar-track {
+  background: #1a202c;
+}
+
+.terminal-output::-webkit-scrollbar-thumb {
+  background-color: #4a5568;
+  border-radius: 4px;
+}
+
+.terminal-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+  padding: 2px 0;
+}
+
+.terminal-line.command {
+  color: #63b3ed;
+  font-weight: bold;
+}
+
+.terminal-line.error {
+  color: #f56565;
+}
+
+.terminal-line.warning {
+  color: #ecc94b;
+}
+
+.terminal-input-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #000;
+  padding: 4px 0;
+  border-top: 1px solid #2d3748;
+}
+
+.terminal-prompt {
+  color: #48bb78;
+  white-space: nowrap;
+}
+
+.terminal-input {
+  flex-grow: 1;
+  background-color: transparent;
+  color: #48bb78;
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+  margin: 0;
+  caret-color: #48bb78;
+  width: 100%;
+}
+
+.terminal-placeholder {
+  color: #4a5568;
+  font-style: italic;
+  padding: 8px;
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Crusade Bootloader",
+  "version": "2.0",
+  "main": "boot.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "notpran",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "express": "^5.1.0",
+    "open": "^10.1.2"
+  }
+}
