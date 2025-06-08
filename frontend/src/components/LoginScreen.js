@@ -56,7 +56,7 @@ const LoginScreen = () => {
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white font-inter">
       <div className="bg-gray-800 p-8 rounded-lg shadow-xl w-96">
-        <h2 className="text-3xl font-bold mb-6 text-center text-blue-400">Web OS Login</h2>
+        <h2 className="text-3xl font-bold mb-6 text-center text-blue-400">CrusadeOS Login</h2>
         <div className="mb-4">
           <input
             type="text"
