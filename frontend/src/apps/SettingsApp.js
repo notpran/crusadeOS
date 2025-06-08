@@ -1,4 +1,5 @@
 // frontend/src/apps/SettingsApp.js
+// This app is still in beta and is a work in progress!
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext'; // Assuming useAuth is available
 
@@ -90,22 +91,6 @@ const SettingsApp = () => {
           className="w-24 h-10 p-1 rounded-md border border-gray-600 cursor-pointer"
         />
       </div>
-
-      {/* Add more settings here */}
-      {/* <div className="mb-6">
-        <label htmlFor="desktopBackgroundImage" className="block text-gray-300 text-sm font-bold mb-2">
-          Desktop Background Image URL:
-        </label>
-        <input
-          type="text"
-          id="desktopBackgroundImage"
-          name="desktopBackgroundImage"
-          value={settings.desktopBackgroundImage}
-          onChange={handleSettingChange}
-          placeholder="e.g., https://placehold.co/800x600"
-          className="w-full p-2 rounded-md bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-      </div> */}
 
       <button
         onClick={saveSettings}
