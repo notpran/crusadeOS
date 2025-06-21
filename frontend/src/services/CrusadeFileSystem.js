@@ -9,6 +9,9 @@ export class CrusadeFileSystem {
         this.onError = onError;
         this.onSessionExpired = onSessionExpired;
         this.abortController = null;
+        this.ws = null;
+        this.eventHandlers = new Map();
+        this.connectWebSocket();
     }    // Helper function to validate paths
     validatePath(pathToValidate) {
         if (!pathToValidate || typeof pathToValidate !== 'string') {
@@ -158,8 +161,114 @@ export class CrusadeFileSystem {
         });
     }
 
+    // Share a file/folder with another user
+    async shareItem(itemPath, targetUserId) {
+        const validPath = this.validatePath(itemPath);
+        return this.apiCall('/api/cvfs/share', {
+            method: 'POST',
+            body: JSON.stringify({ path: validPath, targetUserId })
+        });
+    }
+
+    // List all users (for sharing UI)
+    async listUsers() {
+        return this.apiCall('/api/users');
+    }
+
+    // List pending shares for the current user
+    async listPendingShares() {
+        return this.apiCall('/api/cvfs/pending-shares');
+    }
+
+    // Accept a pending share
+    async acceptShare(name) {
+        return this.apiCall('/api/cvfs/accept-share', {
+            method: 'POST',
+            body: JSON.stringify({ name })
+        });
+    }
+
+    // Deny a pending share
+    async denyShare(name) {
+        return this.apiCall('/api/cvfs/deny-share', {
+            method: 'POST',
+            body: JSON.stringify({ name })
+        });
+    }
+
+    // Upload a file (Uint8Array) to a directory
+    async uploadFile(dirPath, fileName, uint8Array) {
+        const validPath = this.validatePath(dirPath);
+        const formData = new FormData();
+        formData.append('file', new Blob([uint8Array]), fileName);
+        formData.append('path', validPath);
+        return fetch(`${API_BASE_URL}/api/cvfs/upload`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.token}`
+            },
+            body: formData
+        }).then(async (res) => {
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.message || 'Upload failed');
+            }
+            return res.json();
+        });
+    }
+
+    // WebSocket connection and events
+    connectWebSocket() {
+        try {
+            const wsUrl = `ws://localhost:5000?token=${this.token}`;
+            this.ws = new WebSocket(wsUrl);
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    const handlers = this.eventHandlers.get(data.event) || [];
+                    handlers.forEach(handler => handler(data));
+                } catch (err) {
+                    console.error('Error processing WebSocket message:', err);
+                }
+            };
+
+            this.ws.onclose = () => {
+                console.log('WebSocket connection closed, attempting to reconnect...');
+                setTimeout(() => this.connectWebSocket(), 3000);
+            };
+
+            this.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        } catch (error) {
+            console.error('Error connecting to WebSocket:', error);
+        }
+    }
+
+    addEventListener(event, handler) {
+        if (!this.eventHandlers.has(event)) {
+            this.eventHandlers.set(event, []);
+        }
+        this.eventHandlers.get(event).push(handler);
+    }
+
+    removeEventListener(event, handler) {
+        if (!this.eventHandlers.has(event)) return;
+        const handlers = this.eventHandlers.get(event);
+        const index = handlers.indexOf(handler);
+        if (index > -1) {
+            handlers.splice(index, 1);
+        }
+    }
+
     // Clean up method
     cleanup() {
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+        this.eventHandlers.clear();
         this.abortController?.abort();
     }
 }

@@ -15,13 +15,18 @@ const ImageViewerApp = ({ filePath, fileName, token }) => {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`http://localhost:5000/api/vfs/serve-file?path=${encodeURIComponent(path)}`, {
+      const response = await fetch(`${process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000'}/api/cvfs/serve-file?path=${encodeURIComponent(path)}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to load image.');
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to load image.');
+        } else {
+          throw new Error('Failed to load image.');
+        }
       }
 
       const imageBlob = await response.blob();
@@ -50,7 +55,7 @@ const ImageViewerApp = ({ filePath, fileName, token }) => {
         URL.revokeObjectURL(imageUrl);
       }
     };
-  }, [filePath, token, loadImage, imageUrl]);
+  }, [filePath, token, loadImage]);
 
   const handleDrop = useCallback(async (e) => {
     e.preventDefault();
@@ -116,36 +121,36 @@ const ImageViewerApp = ({ filePath, fileName, token }) => {
   }
 
   return (
-    <div className="flex flex-col h-full items-center justify-center bg-gray-900 overflow-hidden p-4">
+    <div className="flex flex-col h-full items-center justify-center bg-gray-900 overflow-hidden p-4 relative">
       {fileName && (
-        <div className="absolute top-0 left-0 right-0 bg-gray-800 bg-opacity-75 p-2">
+        <div className="absolute top-0 left-0 right-0 bg-gray-800 bg-opacity-75 p-2 z-10">
           <h3 className="text-lg font-semibold text-gray-300 text-center">{fileName}</h3>
         </div>
       )}
-      
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75">
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
-        </div>
-      )}
-      
-      {error && (
-        <div className="bg-red-900 bg-opacity-75 p-4 rounded-lg">
-          <p className="text-red-400">{error}</p>
-        </div>
-      )}
-      
-      {imageUrl && !loading && !error && (
-        <img
-          src={imageUrl}
-          alt={fileName || 'Dropped image'}
-          className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
-          onError={() => {
-            setError('Failed to display image. It might be corrupted or in an unsupported format.');
-            addNotification('Failed to display image. It might be corrupted or in an unsupported format.', 'error');
-          }}
-        />
-      )}
+      {/* Content area below title bar */}
+      <div style={{marginTop: fileName ? 40 : 0, width: '100%', height: '100%', position: 'relative'}}>
+        {loading && (
+          <div className="absolute left-0 right-0 bg-gray-900 bg-opacity-75 flex items-center justify-center" style={{top: 0, bottom: 0, pointerEvents: 'auto', zIndex: 20}}>
+            <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+          </div>
+        )}
+        {error && (
+          <div className="absolute left-0 right-0 bg-red-900 bg-opacity-75 p-4 rounded-lg flex items-center justify-center" style={{top: 0, bottom: 0, pointerEvents: 'auto', zIndex: 20}}>
+            <p className="text-red-400">{error}</p>
+          </div>
+        )}
+        {imageUrl && !loading && !error && (
+          <img
+            src={imageUrl}
+            alt={fileName || 'Dropped image'}
+            className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+            onError={() => {
+              setError('Failed to display image. It might be corrupted or in an unsupported format.');
+              addNotification('Failed to display image. It might be corrupted or in an unsupported format.', 'error');
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 };

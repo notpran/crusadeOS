@@ -20,8 +20,8 @@ import ContextMenu from './components/ContextMenu';
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000';
 
 // Window size constants
-const DEFAULT_WINDOW_WIDTH = 800;
-const DEFAULT_WINDOW_HEIGHT = 800;
+const DEFAULT_WINDOW_WIDTH = 400;
+const DEFAULT_WINDOW_HEIGHT = 400;
 const TASKBAR_HEIGHT = 40;
 
 // Map app IDs to their React components
@@ -141,24 +141,24 @@ function MainAppContent() {
   }, []);
 
   // File handling callback
-  const openFileInEditor = useCallback(async (filePath, currentPath) => {
+  const openFileInEditor = useCallback(async (filePath, fileType) => {
     const fileName = filePath.split('/').pop();
     const fileExtension = fileName.split('.').pop().toLowerCase();
-    const fullFilePath = currentPath === '/' ? `/${fileName}` : `${currentPath}/${fileName}`;
-    
     let appToLaunch;
     let appTitlePrefix;
     let contentToPass = {};
 
-    if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'].includes(fileExtension)) {
+    if ([
+      'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'
+    ].includes(fileExtension) || fileType === 'image') {
       appToLaunch = 'image-viewer-app';
       appTitlePrefix = 'Viewing';
-      contentToPass.filePath = fullFilePath;
+      contentToPass.filePath = filePath;
     } else {
       appToLaunch = 'text-editor-app';
       appTitlePrefix = 'Editing';
       try {
-        const response = await fetch(`${API_BASE_URL}/api/cvfs/file?path=${encodeURIComponent(fullFilePath)}`, {
+        const response = await fetch(`${API_BASE_URL}/api/cvfs/file?path=${encodeURIComponent(filePath)}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (!response.ok) {
@@ -174,9 +174,9 @@ function MainAppContent() {
       }
     }
 
-    launchAppRef.current(appToLaunch, `${appTitlePrefix}: ${fileName}`, { 
-      filePath: fullFilePath, 
-      fileName: fileName, 
+    launchAppRef.current(appToLaunch, `${appTitlePrefix}: ${fileName}`, {
+      filePath,
+      fileName,
       ...contentToPass
     });
   }, [token, addNotification]);
@@ -225,6 +225,8 @@ function MainAppContent() {
         content: <AppComponent key={newWindowId} {...appProps} />,
         x: x,
         y: y,
+        width: DEFAULT_WINDOW_WIDTH,
+        height: DEFAULT_WINDOW_HEIGHT,
         focused: true,
         minimized: false,
         maximized: false

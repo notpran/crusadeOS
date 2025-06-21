@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs/promises'); // Using promises version of fs
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
+const { exec } = require('child_process');
+const WebSocket = require('ws');
 
 const app = express();
 const PORT = 5000;
@@ -17,6 +19,7 @@ const CVFS_ROOT_DIR = path.join(DATA_DIR, 'user_data'); // User data directory f
 const USERS_FILE = path.join(DATA_DIR, 'users.json'); // server/data/users.json
 const APPS_MANIFEST_FILE = path.join(DATA_DIR, 'apps_manifest.json'); // server/data/apps_manifest.json
 const SETTINGS_DIR = path.join(DATA_DIR, 'settings'); // New: Directory for user-specific settings
+const SHARED_FILES_FILE = path.join(DATA_DIR, 'shared_files.json'); // server/data/shared_files.json
 
 // CRITICAL: This path points to your frontend's src/apps directory.
 // This is where the actual React component files are located.
@@ -41,6 +44,12 @@ const PREDEFINED_APPS = [
 app.use(cors());
 app.use(express.json());
 
+// --- Debug: Log all incoming requests ---
+app.use((req, res, next) => {
+  console.log(`[HTTP] ${req.method} ${req.url}`);
+  next();
+});
+
 // --- Helper Functions ---
 
 // Ensures necessary data directories and files exist on server startup
@@ -52,7 +61,7 @@ async function ensureDataStructuresExist() {
         await fs.mkdir(SETTINGS_DIR, { recursive: true }); // Create settings directory
         
         // Ensure core data files exist
-        for (const file of [USERS_FILE, APPS_MANIFEST_FILE]) {
+        for (const file of [USERS_FILE, APPS_MANIFEST_FILE, SHARED_FILES_FILE]) {
             try {
                 await fs.access(file);
                 console.log(`${path.basename(file)} exists: ${file}`);
@@ -66,10 +75,8 @@ async function ensureDataStructuresExist() {
                 }
             }
         }
-        
         // Populate default app metadata if apps_manifest.json is empty
         await populateDefaultAppsManifest();
-
     } catch (error) {
         console.error('CRITICAL ERROR: Failed to ensure data structures exist:', error.message);
         process.exit(1);
@@ -106,15 +113,20 @@ async function populateDefaultAppsManifest() {
     }
 }
 
-// Security helper: Ensures path is within CVFS_ROOT_DIR
-function getAbsolutePath(relativePath) {
-    const absolutePath = path.join(CVFS_ROOT_DIR, path.normalize(relativePath));
-    if (!absolutePath.startsWith(CVFS_ROOT_DIR)) {
-        console.error(`Security violation attempt: Path traversal detected for "${relativePath}"`);
-        throw new Error('Security Error: Attempted path traversal outside CVFS root.');
+// Security helper: Ensures path is within CVFS_ROOT_DIR and user folder
+function getAbsolutePath(relativePath, userId) {
+    if (!userId) {
+        throw new Error('User ID is required for file operations.');
     }
-    if (relativePath === '/') {
-        return CVFS_ROOT_DIR; // Explicitly handle root path
+    // Always scope to the user's directory
+    const userRoot = path.join(CVFS_ROOT_DIR, userId);
+    const absolutePath = path.join(userRoot, path.normalize(relativePath));
+    if (!absolutePath.startsWith(userRoot)) {
+        console.error(`Security violation attempt: Path traversal detected for "${relativePath}"`);
+        throw new Error('Security Error: Attempted path traversal outside user root.');
+    }
+    if (relativePath === '/' || relativePath === '') {
+        return userRoot; // Explicitly handle root path
     }
     return absolutePath;
 }
@@ -183,6 +195,9 @@ app.post('/api/auth/signup', async (req, res) => {
         const newUser = { id: uuidv4(), username, password: hashedPassword };
         users.push(newUser);
         await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+        // Create a folder for the new user
+        const userFolder = path.join(CVFS_ROOT_DIR, newUser.id);
+        await fs.mkdir(userFolder, { recursive: true });
 
         console.log(`User "${username}" registered successfully.`);
         res.status(201).json({ message: 'User registered successfully.' });
@@ -278,30 +293,44 @@ app.post('/api/auth/refresh', authenticateToken, (req, res) => {
 app.get('/api/cvfs/list', authenticateToken, async (req, res) => {
     const cvfsPath = req.query.path || '/';
     try {
-        const absolutePath = getAbsolutePath(cvfsPath);
-        const entries = await fs.readdir(absolutePath, { withFileTypes: true });
-        // Use Promise.all to get sizes asynchronously
-        const items = await Promise.all(entries.map(async entry => {
-            let size = null;
-            if (entry.isFile()) {
-                try {
-                    const stat = await fs.stat(path.join(absolutePath, entry.name));
-                    size = stat.size;
-                } catch {}
+        const absolutePath = getAbsolutePath(cvfsPath, req.userId);
+        let items = [];
+        let stat;
+        try {
+            stat = await fs.stat(absolutePath);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ message: 'Path not found.' });
             }
-            return {
-                name: entry.name,
-                type: entry.isDirectory() ? 'folder' : 'file',
-                size
-            };
-        }));
+            throw error;
+        }
+        if (stat.isFile()) {
+            // If the path is a file, return it as a single file entry
+            items = [{
+                name: path.basename(absolutePath),
+                type: 'file',
+                size: stat.size
+            }];
+        } else if (stat.isDirectory()) {
+            const entries = await fs.readdir(absolutePath, { withFileTypes: true });
+            items = await Promise.all(entries.map(async (entry) => {
+                let size = null;
+                if (entry.isFile()) {
+                    try {
+                        const stat = await fs.stat(path.join(absolutePath, entry.name));
+                        size = stat.size;
+                    } catch {}
+                }
+                return {
+                    name: entry.name,
+                    type: entry.isDirectory() ? 'folder' : 'file',
+                    size
+                };
+            }));
+        }
         res.setHeader('Content-Type', 'application/json');
         res.json(items);
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.warn(`CVFS list failed: Path "${cvfsPath}" not found for user ${req.userId}.`);
-            return res.status(404).json({ message: 'Path not found.' });
-        }
         console.error(`Error listing directory "${cvfsPath}" for user ${req.userId}:`, error.message, error.stack);
         res.status(500).json({ message: 'Failed to list directory contents.' });
     }
@@ -320,7 +349,7 @@ app.post('/api/cvfs/create', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Invalid item type.' });
     }
     try {
-        const absoluteParentPath = getAbsolutePath(parentPath);
+        const absoluteParentPath = getAbsolutePath(parentPath, req.userId);
         const newItemPath = path.join(absoluteParentPath, name);
         try { await fs.access(newItemPath); console.warn(`CVFS create failed: Item "${name}" already exists in "${parentPath}".`); return res.status(409).json({ message: `Item "${name}" already exists.` }); } catch (error) { if (error.code !== 'ENOENT') { throw error; } }
 
@@ -348,6 +377,8 @@ app.post('/api/cvfs/create', authenticateToken, async (req, res) => {
         }
 
         console.log(`${type} "${name}" created successfully in "${parentPath}" by user ${req.userId}.`);
+        // Notify all user clients of file change
+        broadcastFileEvent(req.userId, 'file-change', { path: parentPath });
         res.status(201).json({ message: `${type} "${name}" created successfully.` });
     } catch (error) {
         console.error(`Error creating ${type} "${name}" in "${parentPath}" for user ${req.userId}:`, error.message, error.stack);
@@ -358,12 +389,9 @@ app.post('/api/cvfs/create', authenticateToken, async (req, res) => {
 app.get('/api/cvfs/file', authenticateToken, async (req, res) => {
     const { path: filePath } = req.query;
     console.log(`CVFS get file attempt for "${filePath}" by user ${req.userId}.`);
-    if (!filePath) {
-        console.warn('CVFS get file failed: Missing file path.');
-        return res.status(400).json({ message: 'Missing file path.' });
-    }
     try {
-        const absoluteFilePath = getAbsolutePath(filePath);
+        const absoluteFilePath = getAbsolutePath(filePath, req.userId);
+        console.log(`[DEBUG] Absolute file path resolved: ${absoluteFilePath} (user: ${req.userId})`);
         const stats = await fs.stat(absoluteFilePath);
         if (stats.isDirectory()) {
             console.warn(`CVFS get file failed: Cannot get content of a directory "${filePath}".`);
@@ -407,10 +435,10 @@ app.put('/api/cvfs/file', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Missing file path.' });
     }
     try {
-        const absoluteFilePath = getAbsolutePath(filePath);
+        const absoluteFilePath = getAbsolutePath(filePath, req.userId);
         const stats = await fs.stat(absoluteFilePath);
         if (stats.isDirectory()) {
-            console.warn(`CVFS update file failed: Cannot write to a directory "${filePath}".`);
+            console.warn(`CVFS update file failed: Cannot write to a directory "${filePath}". Please report his issue on github!`);
             return res.status(400).json({ message: 'Cannot write to a directory.' });
         }
         await fs.writeFile(absoluteFilePath, content, 'utf8');
@@ -418,7 +446,7 @@ app.put('/api/cvfs/file', authenticateToken, async (req, res) => {
         res.json({ message: 'File content updated successfully.' });
     } catch (error) {
         if (error.code === 'ENOENT') {
-            console.warn(`CVFS update file failed: File "${filePath}" not found for user ${req.userId}.`);
+            console.warn(`CVFS update file failed: File "${filePath}" not found for user ${req.userId}. Please report his issue on github!`);
             return res.status(404).json({ message: 'File not found.' });
         }
         console.error(`Error writing file content to "${filePath}" for user ${req.userId}:`, error.message, error.stack);
@@ -434,7 +462,7 @@ app.delete('/api/cvfs/delete', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Missing item path.' });
     }
     try {
-        const absoluteItemPath = getAbsolutePath(itemPath);
+        const absoluteItemPath = getAbsolutePath(itemPath, req.userId);
         const stats = await fs.stat(absoluteItemPath);
         if (stats.isDirectory()) {
             const contents = await fs.readdir(absoluteItemPath);
@@ -445,6 +473,9 @@ app.delete('/api/cvfs/delete', authenticateToken, async (req, res) => {
             await fs.rmdir(absoluteItemPath);
         } else { await fs.unlink(absoluteItemPath); }
         console.log(`Item "${itemPath}" deleted successfully by user ${req.userId}.`);
+        // Notify all user clients of file change
+        const parentPath = path.dirname(itemPath);
+        broadcastFileEvent(req.userId, 'file-change', { path: parentPath });
         res.json({ message: 'Item deleted successfully.' });
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -464,11 +495,14 @@ app.post('/api/cvfs/copy', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Source and destination paths are required.' });
     }
     try {
-        const absSourcePath = getAbsolutePath(sourcePath);
-        const absDestinationPath = getAbsolutePath(destinationPath);
+        const absSourcePath = getAbsolutePath(sourcePath, req.userId);
+        const absDestinationPath = getAbsolutePath(destinationPath, req.userId);
         await fs.mkdir(path.dirname(absDestinationPath), { recursive: true });
         await fs.cp(absSourcePath, absDestinationPath, { recursive: true, force: false }); // force: false prevents overwriting
         console.log(`Copied '${sourcePath}' to '${destinationPath}' successfully by user ${req.userId}.`);
+        // Notify all user clients of file change
+        const parentPath = path.dirname(destinationPath);
+        broadcastFileEvent(req.userId, 'file-change', { path: parentPath });
         res.status(200).json({ message: `Copied '${sourcePath}' to '${destinationPath}'.` });
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -492,11 +526,14 @@ app.post('/api/cvfs/move', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Source and destination paths are required.' });
     }
     try {
-        const absSourcePath = getAbsolutePath(sourcePath);
-        const absDestinationPath = getAbsolutePath(destinationPath);
+        const absSourcePath = getAbsolutePath(sourcePath, req.userId);
+        const absDestinationPath = getAbsolutePath(destinationPath, req.userId);
         await fs.mkdir(path.dirname(absDestinationPath), { recursive: true });
         await fs.rename(absSourcePath, absDestinationPath); // rename also moves
         console.log(`Moved/Renamed '${sourcePath}' to '${destinationPath}' successfully by user ${req.userId}.`);
+        // Notify all user clients of file change
+        const parentPath = path.dirname(destinationPath);
+        broadcastFileEvent(req.userId, 'file-change', { path: parentPath });
         res.status(200).json({ message: `Moved/Renamed '${sourcePath}' to '${destinationPath}'.` });
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -520,9 +557,12 @@ app.delete('/api/cvfs/delete-recursive', authenticateToken, async (req, res) => 
         return res.status(400).json({ message: 'Item path is required.' });
     }
     try {
-        const absoluteItemPath = getAbsolutePath(itemPath);
+        const absoluteItemPath = getAbsolutePath(itemPath, req.userId);
         await fs.rm(absoluteItemPath, { recursive: true, force: true }); // Use fs.rm for recursive deletion
         console.log(`Item '${itemPath}' deleted recursively successfully by user ${req.userId}.`);
+        // Notify all user clients of file change
+        const parentPath = path.dirname(itemPath);
+        broadcastFileEvent(req.userId, 'file-change', { path: parentPath });
         res.status(200).json({ message: `Item '${itemPath}' deleted recursively.` });
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -542,7 +582,7 @@ app.get('/api/cvfs/metadata', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'Item path is required.' });
     }
     try {
-        const absoluteItemPath = getAbsolutePath(itemPath);
+        const absoluteItemPath = getAbsolutePath(itemPath, req.userId);
         const stats = await fs.stat(absoluteItemPath);
         res.json({
             name: path.basename(itemPath),
@@ -570,7 +610,7 @@ app.get('/api/cvfs/serve-file', authenticateToken, async (req, res) => {
         return res.status(400).json({ message: 'File path is required.' });
     }
     try {
-        const absoluteFilePath = getAbsolutePath(filePath);
+        const absoluteFilePath = getAbsolutePath(filePath, req.userId);
         const stats = await fs.stat(absoluteFilePath);
         if (stats.isDirectory()) {
             console.warn(`CVFS serve file failed: Cannot serve directory content "${filePath}".`);
@@ -787,22 +827,259 @@ app.get('/api/health', (req,res) => {
     res.status(200).json({ message: 'CrusadeOS backend is healthy and running!.' });
 })
 
-// --- Start the Server ---
-// Ensure data structures exist and then start the Express server
-ensureDataStructuresExist().then(() => {
-    app.listen(PORT, () => {
-        console.log(`\nNode.js CVFS & Auth Server running on http://localhost:${PORT}`);
-        console.log(`User data will be stored in: ${USERS_FILE}`);
-        console.log(`CVFS data will be stored in: ${CVFS_ROOT_DIR}`);
-        console.log(`Installed apps manifest: ${APPS_MANIFEST_FILE}`);
-        console.log(`User settings: ${SETTINGS_DIR}`);
-        console.log(`Frontend app components are expected in: ${FRONTEND_APPS_DIR}`);
-        console.log('\n--- IMPORTANT ---');
-        console.log('Default apps are populated into apps_manifest.json on first run of the backend.');
-        console.log('You should not need to restart your frontend for default apps to appear after initial backend setup.');
-        console.log('Temporary debug logs for login are active. REMOVE THEM IN PRODUCTION!');
+// --- Pending Shares API ---
+app.get('/api/cvfs/pending-shares', authenticateToken, async (req, res) => {
+    try {
+        // Load pending shares for the current user from shared_files.json
+        const sharedFilesRaw = await fs.readFile(SHARED_FILES_FILE, 'utf8');
+        const sharedFiles = JSON.parse(sharedFilesRaw || '[]');
+        // Filter for shares where the current user is the target
+        const pending = sharedFiles.filter(share => share.targetUserId === req.userId && !share.accepted);
+        res.json(pending);
+    } catch (error) {
+        console.error('Error loading pending shares:', error.message);
+        res.status(500).json({ message: 'Failed to load pending shares.' });
+    }
+});
+
+// --- List all users (for sharing UI) ---
+app.get('/api/users', authenticateToken, async (req, res) => {
+  try {
+    const users = JSON.parse(await fs.readFile(USERS_FILE, 'utf8'));
+    // Only return id and username, not password
+    res.json(users.map(u => ({ id: u.id, username: u.username })));
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load users.' });
+  }
+});
+
+// --- Share a file/folder with another user ---
+app.post('/api/cvfs/share', authenticateToken, async (req, res) => {
+  const { path: sharePath, targetUserId } = req.body;
+  if (!sharePath || !targetUserId) {
+    return res.status(400).json({ message: 'Missing path or target user.' });
+  }
+  try {
+    const sharedFilesRaw = await fs.readFile(SHARED_FILES_FILE, 'utf8');
+    const sharedFiles = sharedFilesRaw ? JSON.parse(sharedFilesRaw) : [];
+    sharedFiles.push({
+      sourceUserId: req.userId,
+      targetUserId,
+      path: sharePath,
+      accepted: false,
+      denied: false,
+      createdAt: new Date().toISOString(),
+      name: sharePath.split('/').pop() || sharePath
     });
-}).catch(err => {
-    console.error('Server failed to initialize due to a critical error:', err.message);
-    process.exit(1); // Exit if initialization fails
+    await fs.writeFile(SHARED_FILES_FILE, JSON.stringify(sharedFiles, null, 2), 'utf8');
+    res.json({ message: 'File shared.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to share file.' });
+  }
+});
+
+// --- Accept a pending share ---
+app.post('/api/cvfs/accept-share', authenticateToken, async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ message: 'Missing share name.' });
+  try {
+    const sharedFilesRaw = await fs.readFile(SHARED_FILES_FILE, 'utf8');
+    const sharedFiles = sharedFilesRaw ? JSON.parse(sharedFilesRaw) : [];
+    const share = sharedFiles.find(s => s.targetUserId === req.userId && s.name === name && !s.accepted && !s.denied);
+    if (!share) return res.status(404).json({ message: 'Share not found.' });
+    share.accepted = true;
+    // Copy the shared file/folder to the user's root
+    const sourceAbs = getAbsolutePath(share.path, share.sourceUserId);
+    const destAbs = getAbsolutePath('/' + share.name, req.userId);
+    const stat = await fs.stat(sourceAbs);
+    if (stat.isDirectory()) {
+      await copyDirRecursive(sourceAbs, destAbs);
+    } else {
+      await fs.copyFile(sourceAbs, destAbs);
+    }
+    await fs.writeFile(SHARED_FILES_FILE, JSON.stringify(sharedFiles, null, 2), 'utf8');
+    res.json({ message: 'Share accepted.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to accept share.' });
+  }
+});
+
+// --- Deny a pending share ---
+app.post('/api/cvfs/deny-share', authenticateToken, async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ message: 'Missing share name.' });
+  try {
+    const sharedFilesRaw = await fs.readFile(SHARED_FILES_FILE, 'utf8');
+    const sharedFiles = sharedFilesRaw ? JSON.parse(sharedFilesRaw) : [];
+    const share = sharedFiles.find(s => s.targetUserId === req.userId && s.name === name && !s.accepted && !s.denied);
+    if (!share) return res.status(404).json({ message: 'Share not found.' });
+    share.denied = true;
+    await fs.writeFile(SHARED_FILES_FILE, JSON.stringify(sharedFiles, null, 2), 'utf8');
+    res.json({ message: 'Share denied.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to deny share.' });
+  }
+});
+
+// --- Helper: Recursively copy directories ---
+async function copyDirRecursive(src, dest) {
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirRecursive(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
+    }
+  }
+}
+
+// --- Start the Server ---
+const server = app.listen(PORT, async () => {
+    await ensureDataStructuresExist();
+    console.log(`\nNode.js CVFS & Auth Server running on http://localhost:${PORT}`);
+    console.log(`User data will be stored in: ${USERS_FILE}`);
+    console.log(`CVFS data will be stored in: ${CVFS_ROOT_DIR}`);
+    console.log(`Installed apps manifest: ${APPS_MANIFEST_FILE}`);
+    console.log(`User settings: ${SETTINGS_DIR}`);
+    console.log(`Frontend app components are expected in: ${FRONTEND_APPS_DIR}`);
+    console.log('\n--- IMPORTANT ---');
+    console.log('Default apps are populated into apps_manifest.json on first run of the backend.');
+    console.log('You should not need to restart your frontend for default apps to appear after initial backend setup.');
+    console.log('Temporary debug logs for login are active. REMOVE THEM IN PRODUCTION!');
+});
+
+// --- WebSocket Server for file events ---
+const wss = new WebSocket.Server({ server }); // Attach WebSocket server to HTTP server
+
+// Map userId to set of sockets
+const userSockets = new Map();
+// Map ws to subscription info: { userId, path, interval }
+const wsSubscriptions = new Map();
+
+wss.on('connection', (ws, request) => {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const token = url.searchParams.get('token');
+    const session = sessions.get(token);
+
+    if (!session) {
+        ws.close(1008, 'Invalid token');
+        return;
+    }
+
+    const userId = session.userId;
+    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    userSockets.get(userId).add(ws);
+
+    ws.on('message', async (msg) => {
+        try {
+            const data = JSON.parse(msg);
+            if (data.type === 'subscribe') {
+                // Clear any previous interval
+                if (wsSubscriptions.has(ws)) {
+                    clearInterval(wsSubscriptions.get(ws).interval);
+                }
+                // Start interval to send file list every 1s
+                const sendFileList = async () => {
+                    try {
+                        const absPath = getAbsolutePath(data.path || '/', userId);
+                        let items = [];
+                        let stat = await fs.stat(absPath);
+                        if (stat.isFile()) {
+                            items = [{ name: path.basename(absPath), type: 'file', size: stat.size }];
+                        } else if (stat.isDirectory()) {
+                            const entries = await fs.readdir(absPath, { withFileTypes: true });
+                            items = await Promise.all(entries.map(async (entry) => {
+                                let size = null;
+                                if (entry.isFile()) {
+                                    try {
+                                        const stat = await fs.stat(path.join(absPath, entry.name));
+                                        size = stat.size;
+                                    } catch {}
+                                }
+                                return {
+                                    name: entry.name,
+                                    type: entry.isDirectory() ? 'folder' : 'file',
+                                    size
+                                };
+                            }));
+                        }
+                        ws.send(JSON.stringify({ type: 'file-list', items }));
+                    } catch (e) {
+                        ws.send(JSON.stringify({ type: 'file-list', items: [] }));
+                    }
+                };
+                const interval = setInterval(sendFileList, 1000);
+                wsSubscriptions.set(ws, { userId, path: data.path, interval, sendFileList });
+                sendFileList(); // send immediately
+            } else if (data.type === 'unsubscribe') {
+                if (wsSubscriptions.has(ws)) {
+                    clearInterval(wsSubscriptions.get(ws).interval);
+                    wsSubscriptions.delete(ws);
+                }
+            }
+        } catch {}
+    });
+
+    ws.on('close', () => {
+        if (userSockets.has(userId)) {
+            userSockets.get(userId).delete(ws);
+            if (userSockets.get(userId).size === 0) userSockets.delete(userId);
+        }
+        if (wsSubscriptions.has(ws)) {
+            clearInterval(wsSubscriptions.get(ws).interval);
+            wsSubscriptions.delete(ws);
+        }
+    });
+    ws.on('error', (err) => {
+        console.error(`[WS] Error for user ${userId}:`, err);
+    });
+});
+
+// Helper to broadcast file events to a user (now also triggers file-list update)
+function broadcastFileEvent(userId, event, payload) {
+    const sockets = userSockets.get(userId);
+    if (!sockets) return;
+    for (const ws of sockets) {
+        if (wsSubscriptions.has(ws)) {
+            wsSubscriptions.get(ws).sendFileList();
+        }
+        ws.send(JSON.stringify({ event, ...payload }));
+    }
+}
+
+// --- NEW: File Upload Endpoint ---
+app.post('/api/cvfs/upload', authenticateToken, async (req, res) => {
+    const busboy = require('busboy');
+    const bb = busboy({ headers: req.headers });
+    let uploadPath = null;
+    let fileName = null;
+    let fileBuffer = Buffer.alloc(0);
+    bb.on('field', (fieldname, val) => {
+        if (fieldname === 'path') uploadPath = val;
+    });
+    bb.on('file', (fieldname, file, info) => {
+        fileName = info.filename;
+        file.on('data', (data) => {
+            fileBuffer = Buffer.concat([fileBuffer, data]);
+        });
+    });
+    bb.on('close', async () => {
+        if (!uploadPath || !fileName) {
+            return res.status(400).json({ message: 'Missing path or file name.' });
+        }
+        try {
+            const absDir = getAbsolutePath(uploadPath, req.userId);
+            await fs.mkdir(absDir, { recursive: true });
+            const absFile = path.join(absDir, fileName);
+            await fs.writeFile(absFile, fileBuffer);
+            broadcastFileEvent(req.userId, 'file-change', { path: uploadPath });
+            res.status(201).json({ message: 'File uploaded.' });
+        } catch (error) {
+            res.status(500).json({ message: 'Failed to upload file.' });
+        }
+    });
+    req.pipe(bb);
 });

@@ -18,6 +18,7 @@ const formatFileSize = (bytes) => {
 const FileExplorer = ({ onOpenFile }) => {
   const { addNotification } = useNotifications();
   const { token, logout } = useAuth();
+  // Always use '/' as the root for the current user
   const [currentPath, setCurrentPath] = useState('/');
   const [items, setItems] = useState([]);
   const [newItemName, setNewItemName] = useState('');
@@ -27,9 +28,14 @@ const FileExplorer = ({ onOpenFile }) => {
   const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
   const [clipboardItem, setClipboardItem] = useState(null);
+  const [shareModal, setShareModal] = useState({ open: false, item: null, users: [] });
   const operationInProgressRef = useRef(false);
   const lastFetchRef = useRef(Date.now());
   const fs = useRef(null);
+
+  // State for pending shares
+  const [pendingShares, setPendingShares] = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
 
   // Setup FileSystem service
   useEffect(() => {
@@ -41,26 +47,22 @@ const FileExplorer = ({ onOpenFile }) => {
     return () => fs.current?.cleanup();
   }, [token, logout, addNotification]);
 
-  // Debounced fetchItems
+  // Fetch items from the file system
   const fetchItems = useCallback(async () => {
-    console.log('fetchItems called', currentPath); // DEBUG: log at function start
-    const now = Date.now();
-    if (now - lastFetchRef.current < 500) {
-      console.log('fetchItems debounced/skipped', currentPath); // DEBUG: log if debounced
-      return; // Debounce fetches
-    }
-    lastFetchRef.current = now;
-
-    if (loading || !fs.current || operationInProgressRef.current) {
-      console.log('fetchItems skipped due to loading/fs/opInProgress', { loading, fsCurrent: !!fs.current, op: operationInProgressRef.current }); // DEBUG
+    console.log('fetchItems called for path:', currentPath);
+    
+    if (!fs.current) {
+      console.log('fetchItems skipped - no fs instance');
       return;
     }
+
     setLoading(true);
     setErrorMessage('');
     try {
       const data = await fs.current.listDirectory(currentPath);
-      console.log('Fetched items:', data); // DEBUG: log backend response
+      console.log('Fetched items:', data);
       setItems(data || []);
+      
       // Update breadcrumbs
       const pathParts = currentPath.split('/').filter(Boolean);
       setBreadcrumbs([{ name: 'Root', path: '/' }, ...pathParts.map((part, index) => ({
@@ -74,7 +76,7 @@ const FileExplorer = ({ onOpenFile }) => {
     } finally {
       setLoading(false);
     }
-  }, [currentPath, loading, addNotification]);
+  }, [currentPath, addNotification]);
 
   // Queue operations to prevent concurrent file system operations
   const queueOperation = useCallback(async (operation) => {
@@ -94,8 +96,9 @@ const FileExplorer = ({ onOpenFile }) => {
 
   // Navigation handler
   const navigateToFolder = useCallback((folderName) => {
+    // Prevent navigation outside user root
     const newPath = currentPath === '/' ? `/${folderName}` : `${currentPath}/${folderName}`;
-    setCurrentPath(newPath);
+    setCurrentPath(path.normalize(newPath));
   }, [currentPath]);
 
   // Handle item double click
@@ -103,7 +106,15 @@ const FileExplorer = ({ onOpenFile }) => {
     if (item.type === 'folder') {
       navigateToFolder(item.name);
     } else {
-      onOpenFile(path.join(currentPath, item.name));
+      const ext = item.name.split('.').pop().toLowerCase();
+      const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
+      // Always use single-slash absolute path
+      const absPath = currentPath === '/' ? `/${item.name}` : `${currentPath}/${item.name}`;
+      if (imageExts.includes(ext)) {
+        onOpenFile(absPath, 'image');
+      } else {
+        onOpenFile(absPath, 'text');
+      }
     }
   }, [currentPath, navigateToFolder, onOpenFile]);
 
@@ -125,57 +136,239 @@ const FileExplorer = ({ onOpenFile }) => {
     });
   }, [clipboardItem, queueOperation, addNotification]);
 
+  // Fetch users for sharing
+  const openShareModal = async (item, userId) => {
+    try {
+      const users = await fs.current.listUsers();
+      setShareModal({ open: true, item, users });
+    } catch (error) {
+      addNotification('Failed to load users for sharing', 'error');
+    }
+  };
+
   // Context menu actions
-  const handleContextMenu = useCallback((e, item) => {
+  const handleContextMenu = useCallback(async (e, item) => {
     e.preventDefault();
-    setContextMenu({
-      x: e.pageX,
-      y: e.pageY,
-      items: [
+    let menuItems = [
+      {
+        label: 'New folder',
+        onClick: () => {
+          setNewItemType('folder');
+          setNewItemName('');
+          // Optionally open a modal or inline input for new folder
+        }
+      },
+      {
+        label: 'New file',
+        onClick: () => {
+          setNewItemType('file');
+          setNewItemName('');
+          // Optionally open a modal or inline input for new file
+        }
+      },
+      {
+        label: 'Paste',
+        disabled: !clipboardItem,
+        onClick: () => handlePaste(currentPath)
+      }
+    ];
+
+    if (item) {
+      // If an item is selected, add separator and more options
+      // Fetch users for share submenu
+      let users = [];
+      try {
+        users = await fs.current.listUsers();
+      } catch (err) {}
+      menuItems.push({ type: 'separator' });
+      menuItems.push(
         {
-          label: 'Cut',
+          label: 'Rename',
           onClick: () => {
-            setClipboardItem({ path: path.join(currentPath, item.name), operation: 'cut' });
-            setContextMenu(null);
+            setNewItemName(item.name);
+            setNewItemType('rename');
+            // Optionally open a modal or inline input for renaming
           }
+        },
+        {
+          label: 'Delete',
+          onClick: () => confirmDelete(item)
         },
         {
           label: 'Copy',
           onClick: () => {
             setClipboardItem({ path: path.join(currentPath, item.name), operation: 'copy' });
-            setContextMenu(null);
           }
         },
         {
-          label: 'Paste',
-          disabled: !clipboardItem,
-          onClick: () => {
-            handlePaste(currentPath);
-            setContextMenu(null);
-          }
-        },
-        {
-          label: 'Delete',
-          onClick: async () => {
-            await queueOperation(async () => {
-              try {
-                await fs.current.deleteItem(path.join(currentPath, item.name));
-                addNotification(`${item.name} deleted successfully`, 'success');
-              } catch (error) {
-                addNotification(error.message, 'error');
-              }
-            });
-            setContextMenu(null);
-          }
+          label: 'Share',
+          submenu: users.filter(u => u.id !== fs.current.token).map(u => ({
+            label: u.username,
+            onClick: () => openShareModal(item, u.id)
+          }))
         }
-      ]
+      );
+    }
+    setContextMenu({
+      x: e.pageX,
+      y: e.pageY,
+      items: menuItems
     });
   }, [currentPath, clipboardItem, queueOperation, addNotification, handlePaste]);
 
   // Update items when path changes
   useEffect(() => {
+    // Always treat '/' as the root for the current user
     fetchItems();
   }, [currentPath, fetchItems]);
+
+  // Fetch file list on mount
+  useEffect(() => {
+    fetchItems();
+  }, [fetchItems]);
+
+  // Share modal UI
+  const handleShare = async (userId) => {
+    try {
+      await fs.current.shareItem(path.join(currentPath, shareModal.item.name), userId);
+      addNotification('File shared successfully!', 'success');
+      setShareModal({ open: false, item: null, users: [] });
+    } catch (error) {
+      addNotification(error.message || 'Failed to share file.', 'error');
+    }
+  };
+
+  // Fetch pending shares
+  const fetchPendingShares = useCallback(async () => {
+    setPendingLoading(true);
+    try {
+      const shares = await fs.current.listPendingShares();
+      setPendingShares(shares || []);
+    } catch (error) {
+      addNotification('Failed to load pending shares', 'error');
+    } finally {
+      setPendingLoading(false);
+    }
+  }, [addNotification]);
+
+  // Accept or deny share
+  const handleAcceptShare = async (name) => {
+    try {
+      await fs.current.acceptShare(name);
+      addNotification('Share accepted!', 'success');
+      fetchPendingShares();
+      fetchItems();
+    } catch (error) {
+      addNotification(error.message || 'Failed to accept share.', 'error');
+    }
+  };
+  const handleDenyShare = async (name) => {
+    try {
+      await fs.current.denyShare(name);
+      addNotification('Share denied.', 'info');
+      fetchPendingShares();
+    } catch (error) {
+      addNotification(error.message || 'Failed to deny share.', 'error');
+    }
+  };
+
+  // Load pending shares on mount
+  useEffect(() => {
+    fetchPendingShares();
+  }, [fetchPendingShares]);
+
+  // --- WebSocket for real-time file updates and polling ---
+  useEffect(() => {
+    if (!token) return;
+    let ws;
+    let subscribedPath = currentPath;
+    let isMounted = true;
+    function subscribe() {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'subscribe', path: subscribedPath }));
+      }
+    }
+    ws = new window.WebSocket(`ws://localhost:5000?token=${token}`);
+    ws.onopen = () => subscribe();
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'file-list') {
+          setItems(msg.items || []);
+        } else if (msg.event === 'file-change') {
+          // Optionally handle file-change events
+        }
+      } catch (e) { /* ignore */ }
+    };
+    ws.onerror = (e) => { console.warn('WebSocket error:', e); };
+    // Resubscribe on path change
+    return () => {
+      isMounted = false;
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'unsubscribe' }));
+      }
+      ws.close();
+    };
+  }, [token, currentPath]);
+
+  // --- Context menu: ensure right-click works on file/folder and background ---
+  const handleBackgroundContextMenu = (e) => {
+    if (e.target === e.currentTarget) {
+      handleContextMenu(e, null);
+    }
+  };
+
+  // --- Delete confirmation dialog ---
+  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, item: null });
+  const confirmDelete = (item) => setDeleteConfirm({ open: true, item });
+  const doDelete = async () => {
+    if (!deleteConfirm.item) return;
+    await queueOperation(async () => {
+      try {
+        await fs.current.deleteItem(path.join(currentPath, deleteConfirm.item.name), true);
+        addNotification(`${deleteConfirm.item.name} deleted successfully`, 'success');
+      } catch (error) {
+        addNotification(error.message, 'error');
+      }
+    });
+    setDeleteConfirm({ open: false, item: null });
+  };
+
+  // Add WebSocket event handler after the fs useEffect
+  useEffect(() => {
+    if (!fs.current) return;
+
+    const handleFileChange = (data) => {
+      console.log('File change event received:', data);
+      // Only refresh if the change affects our current directory
+      if (data.path.startsWith(currentPath)) {
+        fetchItems();
+      }
+    };
+
+    fs.current.addEventListener('fileChange', handleFileChange);
+    
+    return () => {
+      fs.current?.removeEventListener('fileChange', handleFileChange);
+    };
+  }, [currentPath, fetchItems]);
+
+  // Drag-and-drop upload support
+  const handleBackgroundDrop = async (e) => {
+    e.preventDefault();
+    if (!fs.current || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+    for (const file of e.dataTransfer.files) {
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      try {
+        await fs.current.uploadFile(currentPath, file.name, uint8Array);
+        addNotification(`Uploaded ${file.name}`, 'success');
+      } catch (error) {
+        addNotification(`Failed to upload ${file.name}: ${error.message}`, 'error');
+      }
+    }
+    fetchItems();
+  };
 
   // Render UI
   return (
@@ -236,11 +429,11 @@ const FileExplorer = ({ onOpenFile }) => {
                 addNotification('Name cannot be empty or whitespace.', 'error');
                 return;
               }
-              // Clear input state before queueing operation to avoid race conditions
               const name = newItemName.trim();
               const type = newItemType;
               setNewItemName('');
               setNewItemType('');
+              console.log('Creating item:', { currentPath, name, type }); // DEBUG
               queueOperation(async () => {
                 try {
                   await fs.current.createItem(currentPath, name, type);
@@ -268,7 +461,7 @@ const FileExplorer = ({ onOpenFile }) => {
       )}
 
       {/* File list */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto" onContextMenu={handleBackgroundContextMenu} onDrop={handleBackgroundDrop} onDragOver={e => e.preventDefault()}>
         {loading ? (
           <div className="flex items-center justify-center h-full">
             <span className="text-gray-500">Loading...</span>
@@ -282,25 +475,79 @@ const FileExplorer = ({ onOpenFile }) => {
             {items.map((item) => (
               <div
                 key={item.name}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer flex flex-col items-center"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('itemName', item.name);
+                  e.dataTransfer.setData('itemType', item.type);
+                }}
+                onDragOver={(e) => {
+                  if (item.type === 'folder') e.preventDefault();
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  const draggedName = e.dataTransfer.getData('itemName');
+                  const draggedType = e.dataTransfer.getData('itemType');
+                  if (item.type === 'folder' && draggedName && draggedName !== item.name) {
+                    await queueOperation(async () => {
+                      try {
+                        await fs.current.moveItem(
+                          path.join(currentPath, draggedName),
+                          path.join(currentPath, item.name, draggedName)
+                        );
+                        addNotification(`${draggedType === 'folder' ? 'Folder' : 'File'} moved successfully`, 'success');
+                      } catch (error) {
+                        addNotification(error.message || 'Failed to move item.', 'error');
+                      }
+                    });
+                  }
+                }}
                 onClick={() => item.type === 'folder' ? navigateToFolder(item.name) : null}
                 onDoubleClick={() => handleItemDoubleClick(item)}
                 onContextMenu={(e) => handleContextMenu(e, item)}
               >
-                <div className="flex items-center">
-                  <span className="material-icons mr-2">
-                    {item.type === 'folder' ? 'folder' : 'description'}
+                <div className="flex flex-col items-center">
+                  <span style={{ fontSize: '2rem' }}>
+                    {item.type === 'folder' ? '📁' : '📄'}
                   </span>
-                  <span className="truncate">{item.name}</span>
+                  <span className="truncate w-24 text-center mt-1">{item.name}</span>
+                  {item.type === 'file' && item.size != null && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      {formatFileSize(item.size)}
+                    </div>
+                  )}
                 </div>
-                {item.type === 'file' && item.size != null && (
-                  <div className="text-xs text-gray-500 mt-1">
-                    {formatFileSize(item.size)}
-                  </div>
-                )}
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Pending Shares Section */}
+      <div className="border-b dark:border-gray-700 p-2">
+        <h3 className="font-bold mb-2">Pending Shares</h3>
+        {pendingLoading ? (
+          <div className="text-gray-500">Loading...</div>
+        ) : pendingShares.length === 0 ? (
+          <div className="text-gray-500">No pending shares</div>
+        ) : (
+          <ul>
+            {pendingShares.map((share) => (
+              <li key={share.name} className="flex items-center justify-between mb-2">
+                <span>{share.name} ({share.type})</span>
+                <div className="flex gap-2">
+                  <button
+                    className="px-2 py-1 bg-green-500 text-white rounded hover:bg-green-600"
+                    onClick={() => handleAcceptShare(share.name)}
+                  >Accept</button>
+                  <button
+                    className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                    onClick={() => handleDenyShare(share.name)}
+                  >Deny</button>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
@@ -312,6 +559,53 @@ const FileExplorer = ({ onOpenFile }) => {
           items={contextMenu.items}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {/* Share Modal */}
+      {shareModal.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded shadow-lg w-80">
+            <h2 className="text-lg font-bold mb-2">Share "{shareModal.item.name}"</h2>
+            <div className="mb-4">
+              {shareModal.users.length === 0 ? (
+                <div className="text-gray-500">No other users found.</div>
+              ) : (
+                <ul>
+                  {shareModal.users.map((user) => (
+                    <li key={user.id} className="mb-2">
+                      <button
+                        className="w-full px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+                        onClick={() => handleShare(user.id)}
+                      >
+                        {user.username}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <button
+              className="w-full px-3 py-1 bg-gray-400 text-white rounded hover:bg-gray-500"
+              onClick={() => setShareModal({ open: false, item: null, users: [] })}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded shadow-lg w-80">
+            <h2 className="text-lg font-bold mb-2">Confirm Delete</h2>
+            <p>Are you sure you want to delete "{deleteConfirm.item?.name}"? This action cannot be undone.</p>
+            <div className="flex gap-2 mt-4 justify-end">
+              <button className="px-3 py-1 bg-gray-400 text-white rounded" onClick={() => setDeleteConfirm({ open: false, item: null })}>Cancel</button>
+              <button className="px-3 py-1 bg-red-600 text-white rounded" onClick={doDelete}>Delete</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Error message */}

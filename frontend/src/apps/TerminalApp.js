@@ -478,6 +478,32 @@ const TerminalApp = ({ updateInstalledApps }) => {
           clearOutput();
           break;
 
+        // Terminal command execution (uses new backend endpoint)
+        case 'exec': {
+          if (args.length === 0) {
+            writeOutput('Usage: exec <command>');
+            break;
+          }
+          const cmd = args.join(' ');
+          try {
+            const response = await fetch(`${API_BASE_URL}/api/terminal/exec`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ command: cmd, cwd })
+            });
+            const data = await response.json();
+            if (response.ok) {
+              if (data.stdout) writeOutput(data.stdout, 'info');
+              if (data.stderr) writeOutput(data.stderr, 'error');
+            } else {
+              writeOutput(`Error: ${data.stderr || data.error || 'Unknown error'}`, 'error');
+            }
+          } catch (error) {
+            writeOutput(`Error: ${error.message}`, 'error');
+          }
+          break;
+        }
+
         default:
           writeOutput(`Unknown command: ${cmd}. Type 'help' for available commands.`, 'error');
       }
@@ -489,55 +515,48 @@ const TerminalApp = ({ updateInstalledApps }) => {
   const handleCommandSubmit = (e) => {
     e.preventDefault();
     if (command.trim() === '') return;
-    
-    executeCommand(command.trim());
+    executeCommand(command);
     setCommand('');
   };
 
-  // Handle command history navigation
-  const handleKeyDown = (e) => {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (historyIndex.current > 0) {
-        historyIndex.current -= 1;
-        setCommand(commandHistory.current[historyIndex.current]);
-      }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (historyIndex.current < commandHistory.current.length - 1) {
-        historyIndex.current += 1;
-        setCommand(commandHistory.current[historyIndex.current]);
-      } else {
-        historyIndex.current = commandHistory.current.length;
-        setCommand('');
-      }
-    }
-  };
-
   return (
-    <div className="terminal-app h-full flex flex-col bg-black text-green-400 font-mono p-2">
-      <div className="terminal-output flex-grow overflow-y-auto" ref={outputRef}>
-        {output.length === 0 && (
-          <div className="terminal-placeholder opacity-50">
-            Welcome to the Terminal App! Type 'help' for a list of commands.
-          </div>
-        )}
-        {output.map((line, index) => (
-          <div key={index} className={`terminal-line ${line.type}`}>
-            {line.timestamp} - {line.text}
+    <div className="terminal-app">
+      <div className="terminal-output" ref={outputRef} style={{ height: '300px', overflowY: 'auto', background: '#111', color: '#eee', padding: '10px', fontFamily: 'monospace', fontSize: '14px' }}>
+        {output.map((line, idx) => (
+          <div key={idx} style={{ color: line.type === 'error' ? '#ff5555' : line.type === 'warning' ? '#ffb86c' : '#f8f8f2' }}>
+            <span style={{ opacity: 0.5, marginRight: 8 }}>{line.timestamp}</span>
+            {line.text}
           </div>
         ))}
       </div>
-      <form className="terminal-input-form mt-2 flex items-center" onSubmit={handleCommandSubmit}>
-        <div className="terminal-prompt mr-2">{cwd}$</div>
+      <form onSubmit={handleCommandSubmit} style={{ display: 'flex', marginTop: 8 }}>
+        <span style={{ color: '#50fa7b', fontFamily: 'monospace', marginRight: 4 }}>{cwd} $</span>
         <input
           type="text"
-          className="terminal-input flex-grow bg-transparent border-none outline-none"
           value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onChange={e => setCommand(e.target.value)}
           autoFocus
+          style={{ flex: 1, background: '#222', color: '#fff', border: 'none', outline: 'none', fontFamily: 'monospace', fontSize: '14px', padding: 4 }}
+          onKeyDown={e => {
+            if (e.key === 'ArrowUp') {
+              if (commandHistory.current.length > 0 && historyIndex.current > 0) {
+                historyIndex.current -= 1;
+                setCommand(commandHistory.current[historyIndex.current]);
+              }
+              e.preventDefault();
+            } else if (e.key === 'ArrowDown') {
+              if (commandHistory.current.length > 0 && historyIndex.current < commandHistory.current.length - 1) {
+                historyIndex.current += 1;
+                setCommand(commandHistory.current[historyIndex.current]);
+              } else {
+                setCommand('');
+                historyIndex.current = commandHistory.current.length;
+              }
+              e.preventDefault();
+            }
+          }}
         />
+        <button type="submit" style={{ marginLeft: 8, background: '#444', color: '#fff', border: 'none', padding: '4px 12px', borderRadius: 4 }}>Run</button>
       </form>
     </div>
   );

@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "express": "^5.1.0",
-    "open": "^10.1.2"
+    "open": "^10.1.2",
+    "ws": "^8.18.2"
   }
 }

@@ -2,7 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const Window = ({ id, title, children, onClose, onMinimize, onMaximize, initialX, initialY, initialWidth, initialHeight, focused, onFocus }) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [position, setPosition] = useState({ x: initialX || 100, y: initialY || 100 });
+  const [position, setPosition] = useState({ 
+    x: initialX !== undefined ? initialX : 100, 
+    y: initialY !== undefined ? initialY : 100 
+  });
   const [size, setSize] = useState({ width: initialWidth || 400, height: initialHeight || 300 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const windowRef = useRef(null); // Ref for resizing

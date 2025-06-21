@@ -62,11 +62,11 @@ function startProcess(command, directory) {
 /**
  * Generates the HTML content for the initial loading screen.
  * This HTML includes inline CSS (Tailwind via CDN) and JavaScript for polling.
- * @param {number} backendPort The port where the backend server is running.
- * @param {number} frontendPort The port where the React frontend will be served.
+ * @param {number} backendPort The port where the system is running.
+ * @param {number} frontendPort The port where the desktop will be served.
  * @returns {string} The complete HTML string for the loading page.
  */
-const generateLoadingPageHtml = (backendPort, frontendPort) => `
+const generateLoadingPageHtml = (backendPort, frontendPort, status = 'Welcome to CrusadeOS') => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -75,24 +75,22 @@ const generateLoadingPageHtml = (backendPort, frontendPort) => `
     <title>Crusade OS Loading</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Custom styles for the loading screen, inspired by macOS */
         body {
             margin: 0;
-            overflow: hidden; /* Prevent scrolling */
-            font-family: 'Inter', sans-serif; /* Use Inter font */
-            background-color: #1a202c; /* Dark background, similar to macOS boot */
+            overflow: hidden;
+            font-family: 'Segoe UI', 'Inter', sans-serif;
+            background-color: #1a202c;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            min-height: 100vh; /* Full viewport height */
-            color: #e2e8f0; /* Light text color */
+            min-height: 100vh;
+            color: #e2e8f0;
         }
-
         .os-logo {
             width: 80px;
             height: 80px;
-            background-color: #3b82f6; /* Blue circle for OS icon */
+            background-color: #3b82f6;
             border-radius: 50%;
             display: flex;
             align-items: center;
@@ -100,38 +98,35 @@ const generateLoadingPageHtml = (backendPort, frontendPort) => `
             font-size: 3rem;
             font-weight: bold;
             color: #ffffff;
-            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.3); /* Subtle shadow */
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.3);
             margin-bottom: 24px;
         }
-
         .os-name {
             font-size: 3.5rem;
             font-weight: 800;
-            color: #e2e8f0; /* Light gray text */
+            color: #e2e8f0;
             margin-bottom: 32px;
         }
-
         .loading-bar-container {
-            width: 320px; /* Fixed width for the bar */
+            width: 320px;
             height: 8px;
-            background-color: #4a5568; /* Darker gray for empty bar */
-            border-radius: 9999px; /* Fully rounded corners */
-            overflow: hidden;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2); /* Inner shadow for depth */
-        }
-
-        .loading-bar-fill {
-            width: 0%; /* Initial width */
-            height: 100%;
-            background: linear-gradient(to right, #60a5fa, #3b82f6); /* Blue gradient fill */
+            background-color: #4a5568;
             border-radius: 9999px;
-            transition: width 0.5s ease-out; /* Smooth transition for progress updates */
+            overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
         }
-
+        .loading-bar-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(to right, #60a5fa, #3b82f6);
+            border-radius: 9999px;
+            transition: width 0.5s ease-out;
+        }
         .status-text {
             margin-top: 16px;
-            font-size: 0.875rem; /* text-sm */
-            color: #a0aec0; /* gray-400 */
+            font-size: 1.25rem;
+            color: #a0aec0;
+            text-align: center;
         }
     </style>
 </head>
@@ -141,83 +136,92 @@ const generateLoadingPageHtml = (backendPort, frontendPort) => `
     <div class="loading-bar-container">
         <div id="loading-bar-fill" class="loading-bar-fill"></div>
     </div>
-    <p id="status-text" class="status-text">Starting up...</p>
-
+    <p id="status-text" class="status-text">${status}</p>
     <script>
-        // JavaScript to manage the loading animation and redirect
         const backendUrl = 'http://localhost:${backendPort}/api/health';
         const frontendUrl = 'http://localhost:${frontendPort}';
         const loadingBar = document.getElementById('loading-bar-fill');
         const statusText = document.getElementById('status-text');
-
         let currentProgress = 0;
+        let phase = 0;
         let pollingAttempts = 0;
-        const maxPollingAttempts = 60; // Max 60 seconds (1s interval) for backend polling
-
-        // Function to animate the initial visual progress of the loading bar
+        const maxPollingAttempts = 60;
+        const messages = [
+            'Welcome to CrusadeOS',
+            'Checking system files...',
+            'Starting system services...',
+            'System ready! Launching your desktop...',
+            'Preparing your desktop...',
+            'Almost there...'
+        ];
+        function setStatus(msg, progress) {
+            statusText.textContent = msg;
+            if (progress !== undefined) {
+                loadingBar.style.width = progress + '%';
+            }
+        }
         function animateInitialProgress() {
             let initialFill = 0;
+            setStatus(messages[0], 5);
             const initialInterval = setInterval(() => {
-                if (initialFill < 30) { // Fill up to 30% quickly to show immediate activity
-                    initialFill += 5;
+                if (initialFill < 20) {
+                    initialFill += 2;
                     loadingBar.style.width = \`\${initialFill}%\`;
-                    statusText.textContent = 'Initializing system...';
+                    if (initialFill === 10) setStatus(messages[1], initialFill);
                 } else {
                     clearInterval(initialInterval);
-                    // Once initial visual progress is done, start polling the backend
                     pollBackend();
                 }
-            }, 100); // Update every 100ms for quick initial fill
+            }, 80);
         }
-
-        // Function to poll the backend health check endpoint
         async function pollBackend() {
-            statusText.textContent = 'Connecting to backend services...';
+            setStatus(messages[2], 30);
             const pollingIntervalId = setInterval(async () => {
                 pollingAttempts++;
                 if (pollingAttempts > maxPollingAttempts) {
-                    statusText.textContent = 'Backend connection timed out. Please check server logs and refresh.';
+                    setStatus('Could not start CrusadeOS. Please check and refresh.', 100);
                     clearInterval(pollingIntervalId);
-                    // At this point, you might want to display a permanent error or a retry button
                     return;
                 }
-
                 try {
                     const response = await fetch(backendUrl);
                     if (response.ok) {
-                        // Backend is ready!
-                        statusText.textContent = 'Backend ready. Launching frontend...';
-                        loadingBar.style.width = '100%'; // Complete the bar to 100%
-                        clearInterval(pollingIntervalId); // Stop polling
-
-                        // Give a small delay for the 100% bar to be visible, then redirect
-                        setTimeout(() => {
-                            window.location.href = frontendUrl; // Redirect to the React frontend
-                        }, 500);
-                    } else {
-                        // Backend responded but not with a success status (e.g., 404, 500)
-                        console.warn(\`Backend health check failed with status: \${response.status}\`);
-                        statusText.textContent = \`Waiting for backend... (Attempt \${pollingAttempts})\`;
-                        // Increment progress slightly while waiting for backend, but don't reach 100%
-                        if (currentProgress < 90) {
-                            currentProgress = Math.min(currentProgress + 1, 90);
-                            loadingBar.style.width = \`\${currentProgress}%\`;
-                        }
+                        setStatus(messages[3], 60);
+                        clearInterval(pollingIntervalId);
+                        setTimeout(pollFrontend, 800);
+                        return;
                     }
-                } catch (error) {
-                    // Network error, backend not reachable yet
-                    console.error('Error connecting to backend:', error);
-                    statusText.textContent = \`Connecting to backend... (Attempt \${pollingAttempts})\`;
-                    // Increment progress slightly even on network errors
-                    if (currentProgress < 90) {
-                        currentProgress = Math.min(currentProgress + 1, 90);
-                        loadingBar.style.width = \`\${currentProgress}%\`;
-                    }
+                } catch {}
+                if (currentProgress < 50) {
+                    currentProgress = Math.min(currentProgress + 1, 50);
+                    loadingBar.style.width = \`\${currentProgress}%\`;
                 }
-            }, 1000); // Poll every 1 second
+            }, 700);
         }
-
-        // Start the initial animation when the DOM is fully loaded
+        async function pollFrontend() {
+            setStatus(messages[4], 80);
+            let tries = 0;
+            const maxTries = 60;
+            const interval = setInterval(async () => {
+                tries++;
+                if (tries > maxTries) {
+                    setStatus('Could not start your desktop. Please check and refresh.', 100);
+                    clearInterval(interval);
+                    return;
+                }
+                try {
+                    const res = await fetch(frontendUrl, {mode: 'no-cors'});
+                    setStatus(messages[5], 100);
+                    clearInterval(interval);
+                    setTimeout(() => { window.location.href = frontendUrl; }, 900);
+                    return;
+                } catch {}
+                if (currentProgress < 99) {
+                    currentProgress = Math.min(currentProgress + 1, 99);
+                    loadingBar.style.width = \`\${currentProgress}%\`;
+                }
+            }, 700);
+        }
         document.addEventListener('DOMContentLoaded', animateInitialProgress);
     </script>
 </body>
@@ -225,77 +229,126 @@ const generateLoadingPageHtml = (backendPort, frontendPort) => `
 `;
 
 /**
- * Main function to set up and start the project.
+ * Checks if a directory exists.
+ * @param {string} dirPath
+ * @returns {boolean}
  */
+function directoryExists(dirPath) {
+    try {
+        return fs.existsSync(dirPath) && fs.lstatSync(dirPath).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Checks if this is the first run (no user data directory).
+ * @returns {boolean}
+ */
+function isFirstRun() {
+    const userDataDir = path.join(backendDir, 'data', 'user_data');
+    return !directoryExists(userDataDir);
+}
+
+// Helper to wait for a server to be ready
+async function waitForServer(url, label, maxAttempts = 60, interval = 1000) {
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+        try {
+            const res = await fetch(url);
+            if (res.ok) return true;
+        } catch {}
+        attempts++;
+        console.log(`Waiting for the ${label} to be ready... (${attempts})`);
+        await new Promise(r => setTimeout(r, interval));
+    }
+    return false;
+}
+
 async function startProject() {
     console.log("✨ Starting CrusadeOS");
+
+    // Detect first run and dependency status
+    const backendNodeModules = path.join(backendDir, 'node_modules');
+    const frontendNodeModules = path.join(frontendDir, 'node_modules');
+    const firstRun = isFirstRun();
+    const needsBackendDeps = !directoryExists(backendNodeModules);
+    const needsFrontendDeps = !directoryExists(frontendNodeModules);
+    let initialStatus = 'Starting up...';
+    if (firstRun) initialStatus = 'First-time setup: Getting things ready...';
+    else if (needsBackendDeps || needsFrontendDeps) initialStatus = 'Getting setup files...';
 
     // 1. Start a temporary Express server to serve the initial loading screen
     const loadingApp = express();
     loadingApp.get('/', (req, res) => {
-        res.send(generateLoadingPageHtml(BACKEND_PORT, FRONTEND_PORT));
+        res.send(generateLoadingPageHtml(BACKEND_PORT, FRONTEND_PORT, initialStatus));
     });
 
-    // Start the loading screen server immediately.
-    // The user will navigate to this URL first.
     let loadingServer;
     try {
         loadingServer = loadingApp.listen(LOADING_SCREEN_PORT, () => {
             const loadingUrl = `http://localhost:${LOADING_SCREEN_PORT}`;
-            console.log(`\n🌐 Initial loading screen available at ${loadingUrl}`);
-            console.log('Automatically opening in your browser...');
-            // Check if 'open' is a function or if 'open.default' is a function
+            console.log(`\n🌐 Welcome! Your computer is starting at ${loadingUrl}`);
+            console.log('Opening in your browser...');
             if (typeof open === 'function') {
-                open(loadingUrl); // Use 'open' directly if it's a function
+                open(loadingUrl);
             } else if (typeof open.default === 'function') {
-                open.default(loadingUrl); // Use 'open.default' if it's a function
+                open.default(loadingUrl);
             } else {
-                console.warn("The 'open' package is not correctly imported or is not a function. Please ensure it's installed and correctly exported.");
-                console.warn("You may need to manually open: " + loadingUrl);
+                console.warn("Couldn't open the browser automatically. Please open: " + loadingUrl);
             }
         });
     } catch (err) {
-        console.error(`❌ Failed to start loading screen server on port ${LOADING_SCREEN_PORT}: ${err.message}`);
-        console.error('This might mean the port is already in use. Please free it up or choose a different port.');
-        process.exit(1); // Exit if the loading server cannot start
+        console.error(`❌ Couldn't start the welcome screen: ${err.message}`);
+        process.exit(1);
     }
 
-    // Introduce a delay before starting other processes
-    const initialDelayMs = 2000; // 2 seconds delay
+    const initialDelayMs = 2000;
     await new Promise(resolve => setTimeout(resolve, initialDelayMs));
 
-    // 2. Install Backend Dependencies
+    // 2. Install system files
     installDependencies(backendDir);
-
-    // 3. Install Frontend Dependencies
     installDependencies(frontendDir);
 
-    console.log("\nStarting backend and frontend servers...");
+    console.log("\nStarting your system and desktop...");
 
-    // 4. Start Backend
+    // 3. Start system (backend)
     const backendProcess = startProcess('npm start', backendDir);
+    // 4. Wait for system to be ready
+    const backendReady = await waitForServer(`http://localhost:${BACKEND_PORT}/api/health`, 'system');
+    if (!backendReady) {
+        console.error('❌ The system could not start. Please check the logs.');
+        process.exit(1);
+    }
+    console.log('✅ System is ready!');
 
-    // 5. Start Frontend
+    // 5. Start desktop (frontend)
     const frontendProcess = startProcess('npm start', frontendDir);
+    // 6. Wait for desktop to be ready
+    const frontendReady = await waitForServer(`http://localhost:${FRONTEND_PORT}`, 'desktop');
+    if (!frontendReady) {
+        console.error('❌ The desktop could not start. Please check the logs.');
+        process.exit(1);
+    }
+    console.log('✅ Desktop is ready!');
 
-    console.log("\n✅ Backend and Frontend processes started successfully!");
-    console.log(`💡 Your main application will be available at http://localhost:${FRONTEND_PORT} after the loading sequence completes.`);
-    console.log("Press Ctrl+C to stop all processes.");
+    // 7. Do NOT open the main app in the browser here (the loading screen will redirect)
+    console.log(`\n💡 Your computer is ready at http://localhost:${FRONTEND_PORT}`);
 
     // Handle Ctrl+C (SIGINT) to gracefully kill all child processes
     process.on('SIGINT', () => {
-        console.log('\nStopping backend and frontend processes...');
+        console.log('\nStopping your system and desktop...');
         if (backendProcess) backendProcess.kill('SIGINT');
         if (frontendProcess) frontendProcess.kill('SIGINT');
-        if (loadingServer) loadingServer.close(() => console.log('Loading screen server closed.'));
+        if (loadingServer) loadingServer.close(() => console.log('Welcome screen closed.'));
         process.exit();
     });
 
     process.on('SIGTERM', () => {
-        console.log('\nStopping backend and frontend processes...');
+        console.log('\nStopping your system and desktop...');
         if (backendProcess) backendProcess.kill('SIGTERM');
         if (frontendProcess) frontendProcess.kill('SIGTERM');
-        if (loadingServer) loadingServer.close(() => console.log('Loading screen server closed.'));
+        if (loadingServer) loadingServer.close(() => console.log('Welcome screen closed.'));
         process.exit();
     });
 }
