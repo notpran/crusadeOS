@@ -14,6 +14,7 @@ cd crusadeOS
 
 ## 4. Start crusadeOS
 ```
+npm install
 npm start
 ```
 
